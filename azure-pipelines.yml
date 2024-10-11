@@ -1,0 +1,85 @@
+# Build and deploy an NPM package to JFrog
+
+trigger:
+    - master
+
+pool:
+    vmImage: "ubuntu-latest"
+
+variables:
+    NPM_CACHE_DIR: $(Pipeline.Workspace)/.npm
+
+steps:
+    - checkout: self
+      persistCredentials: true
+
+    # Install Node.js
+    - task: UseNode@1
+      inputs:
+          versionSpec: "20.10.0"
+      displayName: "Use Node.js"
+
+    # Check for version bumps in commit message
+    - script: |
+          if echo "$(Build.SourceVersionMessage)" | grep -qi '\[patch\]'; then
+              echo "Patch version bump found."
+          elif echo "$(Build.SourceVersionMessage)" | grep -qi '\[minor\]'; then
+              echo "Minor version bump found."
+          elif echo "$(Build.SourceVersionMessage)" | grep -qi '\[major\]'; then
+              echo "Major version bump found."
+          else
+              echo "##vso[task.logissue type=error]None of [patch], [minor], or [major] found. Aborting pipeline."
+              exit 1
+      displayName: "Check commit message"
+
+    # Cache npm dependencies
+    - task: Cache@2
+      inputs:
+          key: 'npm | "$(Agent.OS)" | package-lock.json'
+          restoreKeys: |
+              npm | "$(Agent.OS)"
+              npm
+          path: $(NPM_CACHE_DIR)
+      displayName: "Cache npm dependencies"
+
+    # Install dependencies
+    - script: |
+          npm install
+      displayName: "Install dependencies"
+
+    # Lint and test (optional)
+    - script: |
+          npm run lint
+          npm test
+      displayName: "Lint and Test"
+
+    # Bump version based on commit message
+    - script: |
+          git config --global user.email "robot@almaviva.it"
+          git config --global user.name "Build Robot"
+          git fetch; git checkout master
+          if echo "$(Build.SourceVersionMessage)" | grep -qi '\[patch\]'; then
+              npm version patch --no-git-tag-version
+          elif echo "$(Build.SourceVersionMessage)" | grep -qi '\[minor\]'; then
+              npm version minor --no-git-tag-version
+          elif echo "$(Build.SourceVersionMessage)" | grep -qi '\[major\]'; then
+              npm version major --no-git-tag-version
+          else
+              echo "None of [patch], [minor], or [major] found."
+      displayName: "Bump version"
+
+    # Build the package
+    - script: |
+          npm run build
+      displayName: "Build package"
+
+    # Authenticate with JFrog (configure service connection for JFrog)
+    - task: npmAuthenticate@0
+      inputs:
+          workingFile: .npmrc
+      displayName: "Authenticate with JFrog"
+
+    # Publish to JFrog
+    - script: |
+          npm publish
+      displayName: "Publish package to JFrog"
